@@ -22,6 +22,18 @@ class ImageService {
     return result?.path;
   }
 
+  Future<String> rotate(String path) async {
+    final source = img.decodeImage(await File(path).readAsBytes());
+    if (source == null) throw StateError('Could not decode image.');
+    final rotated = img.copyRotate(img.bakeOrientation(source), angle: 90);
+    final dir = await getTemporaryDirectory();
+    final out = File(
+      '${dir.path}/rotated_${DateTime.now().microsecondsSinceEpoch}.png',
+    );
+    await out.writeAsBytes(img.encodePng(rotated));
+    return out.path;
+  }
+
   Future<String> applyFilter(String path, String filter) async {
     final bytes = await File(path).readAsBytes();
     var source = img.decodeImage(bytes);

@@ -1,47 +1,138 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 
 import '../models/scan_page.dart';
+import '../models/scanned_document.dart';
+import '../services/document_store.dart';
+import '../services/import_service.dart';
 import '../services/scanner_service.dart';
 import 'editor_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
-
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
   final _scanner = ScannerService();
-  final List<List<ScanPage>> _recent = [];
-  bool _capturing = false;
+  final _store = DocumentStore();
+  final _importer = ImportService();
+  List<ScannedDocument> _documents = [];
+  bool _busy = true;
+  String? _loadError;
+  String query = '';
 
-  Future<void> _capture() async {
-    setState(() => _capturing = true);
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _busy = true);
     try {
-      final pages = await _scanner.scan();
-      if (!mounted || pages.isEmpty) return;
-      final result = await Navigator.push<List<ScanPage>>(
-        context,
-        MaterialPageRoute(builder: (_) => EditorScreen(initialPages: pages)),
-      );
-      if (mounted && result != null && result.isNotEmpty) {
-        setState(() => _recent.insert(0, result));
+      final documents = await _store.load();
+      if (mounted) {
+        setState(() {
+          _documents = documents;
+          _loadError = null;
+        });
       }
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Could not scan: $error')));
+        setState(() => _loadError = 'Could not open saved scans: $error');
       }
     } finally {
-      if (mounted) setState(() => _capturing = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
+  Future<void> _run(Future<void> Function() action) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await action();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _edit(ScannedDocument document) async {
+    await Navigator.push<List<ScanPage>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EditorScreen(
+          initialPages: List.of(document.pages),
+          onSave: (pages) async {
+            final saved = await _store.save(
+              ScannedDocument(
+                id: document.id,
+                name: document.name,
+                createdAt: document.createdAt,
+                pages: pages,
+              ),
+            );
+            if (mounted) {
+              setState(() {
+                _documents.removeWhere((d) => d.id == saved.id);
+                _documents.insert(0, saved);
+              });
+            }
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _capture() => _run(() async {
+    final pages = await _scanner.scan();
+    if (!mounted || pages.isEmpty) return;
+    await _edit(
+      ScannedDocument(
+        id: const Uuid().v4(),
+        name:
+            'Scan ${DateTime.now().toIso8601String().substring(0, 16).replaceAll('T', ' ')}',
+        createdAt: DateTime.now(),
+        pages: pages,
+      ),
+    );
+  });
+  Future<void> _import() => _run(() async {
+    final result = await _importer.pickPdf();
+    if (!mounted || result == null) return;
+    await _edit(
+      ScannedDocument(
+        id: const Uuid().v4(),
+        name: result.name,
+        createdAt: DateTime.now(),
+        pages: result.pages,
+      ),
+    );
+  });
+
   @override
   Widget build(BuildContext context) {
+    final visible = _documents
+        .where(
+          (d) =>
+              d.name.toLowerCase().contains(query) ||
+              d.pages.any(
+                (p) =>
+                    (p.ocr?.text.toLowerCase().contains(query) ?? false) ||
+                    p.annotations.any(
+                      (a) => a.text.toLowerCase().contains(query),
+                    ),
+              ),
+        )
+        .toList();
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -49,132 +140,97 @@ class _HomeScreenState extends State<HomeScreen> {
           style: TextStyle(fontWeight: FontWeight.w800),
         ),
         actions: [
-          IconButton(onPressed: () {}, icon: const Icon(Icons.search_rounded)),
-          const SizedBox(width: 8),
+          IconButton(
+            tooltip: 'Import PDF',
+            onPressed: _busy ? null : _import,
+            icon: const Icon(Icons.file_open_outlined),
+          ),
         ],
       ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 100),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 90),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                padding: const EdgeInsets.all(22),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Turn paper into PDF',
-                            style: TextStyle(
-                              fontSize: 21,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          SizedBox(height: 7),
-                          Text(
-                            'Auto-capture, edit and export searchable PDFs.',
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Icon(
-                      Icons.document_scanner_rounded,
-                      size: 52,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 28),
               const Text(
-                'Recent scans',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                'Scan, edit and sign',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
+              const Text(
+                'Open a saved scan or import a PDF to crop, annotate and correct text.',
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Search saved names and recognized text',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (value) =>
+                    setState(() => query = value.trim().toLowerCase()),
+              ),
+              const SizedBox(height: 16),
+              if (_busy) const LinearProgressIndicator(),
+              if (_loadError != null) ...[
+                Text(
+                  _loadError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+                TextButton(
+                  onPressed: _load,
+                  child: const Text('Retry opening saved scans'),
+                ),
+              ],
               Expanded(
-                child: _recent.isEmpty
+                child: visible.isEmpty
                     ? const Center(
                         child: Text(
-                          'No scans yet. Tap Scan to create your first document.',
+                          'No matching scans. Scan a page or import a PDF.',
                         ),
                       )
                     : ListView.separated(
-                        itemCount: _recent.length,
-                        separatorBuilder: (_, _) => const SizedBox(height: 12),
-                        itemBuilder: (_, i) {
-                          final pages = _recent[i];
+                        itemCount: visible.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 8),
+                        itemBuilder: (_, index) {
+                          final document = visible[index];
                           return Card(
                             child: ListTile(
-                              contentPadding: const EdgeInsets.all(10),
-                              leading: ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
-                                child: Image.file(
-                                  File(pages.first.path),
-                                  width: 58,
-                                  height: 70,
-                                  fit: BoxFit.cover,
-                                ),
+                              leading: Image.file(
+                                File(document.pages.first.path),
+                                width: 50,
+                                height: 64,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) =>
+                                    const Icon(Icons.broken_image),
                               ),
-                              title: Text(
-                                'Scan ${_recent.length - i}',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
+                              title: Text(document.name),
                               subtitle: Text(
-                                '${pages.length} page${pages.length == 1 ? '' : 's'}',
+                                '${document.pages.length} pages • Saved on device',
                               ),
-                              trailing: const Icon(Icons.chevron_right_rounded),
-                              onTap: () async {
-                                final result =
-                                    await Navigator.push<List<ScanPage>>(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => EditorScreen(
-                                          initialPages: List.of(pages),
-                                        ),
-                                      ),
-                                    );
-                                if (mounted && result != null) {
-                                  setState(() => _recent[i] = result);
-                                }
-                              },
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: _busy
+                                  ? null
+                                  : () => _run(() => _edit(document)),
                             ),
                           );
                         },
                       ),
+              ),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _import,
+                icon: const Icon(Icons.picture_as_pdf),
+                label: const Text('Import PDF'),
               ),
             ],
           ),
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _capturing ? null : _capture,
+        onPressed: _busy ? null : _capture,
         icon: const Icon(Icons.camera_alt_rounded),
         label: const Text('Scan'),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: 0,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.description_outlined),
-            selectedIcon: Icon(Icons.description),
-            label: 'Scans',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.folder_outlined),
-            label: 'Files',
-          ),
-        ],
       ),
     );
   }

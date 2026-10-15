@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:docscan_clone/models/ocr_result.dart';
 import 'package:docscan_clone/models/scan_page.dart';
+import 'package:docscan_clone/models/page_annotation.dart';
 import 'package:docscan_clone/services/pdf_service.dart';
 
 void main() {
@@ -42,10 +43,20 @@ void main() {
       final portrait = File('${dir.path}/portrait.png');
       final landscape = File('${dir.path}/landscape.png');
       await portrait.writeAsBytes(
-        img.encodePng(img.Image(width: 200, height: 300)),
+        img.encodePng(
+          img.fill(
+            img.Image(width: 200, height: 300),
+            color: img.ColorRgb8(255, 255, 255),
+          ),
+        ),
       );
       await landscape.writeAsBytes(
-        img.encodePng(img.Image(width: 300, height: 200)),
+        img.encodePng(
+          img.fill(
+            img.Image(width: 300, height: 200),
+            color: img.ColorRgb8(255, 255, 255),
+          ),
+        ),
       );
       final pages = [
         ScanPage(id: '1', path: portrait.path, ocr: ocr),
@@ -64,6 +75,33 @@ void main() {
           '${dir.path}/${searchable ? 'searchable' : 'image_only'}.pdf',
         ).writeAsBytes(bytes);
       }
+      final corrected = pages.first.copyWith(
+        ocr: ocr.correctWords(['Receipt', '']),
+      );
+      await File('${dir.path}/corrected.pdf')
+          .writeAsBytes(await service.buildPdf([corrected]));
+      final annotated = pages.first.copyWith(
+        annotations: const [
+          PageAnnotation(
+            kind: AnnotationKind.text,
+            bounds: Rect.fromLTWH(.1, .25, .5, .08),
+            text: 'Approved café',
+          ),
+          PageAnnotation(
+            kind: AnnotationKind.highlight,
+            bounds: Rect.fromLTWH(.1, .45, .5, .1),
+          ),
+          PageAnnotation(
+            kind: AnnotationKind.signature,
+            bounds: Rect.zero,
+            points: [Offset(.1, .7), Offset(.25, .8), Offset(.4, .7)],
+          ),
+        ],
+      );
+      await File('${dir.path}/annotated.pdf')
+          .writeAsBytes(await service.buildPdf([annotated]));
+      await File('${dir.path}/annotated_without_ocr.pdf')
+          .writeAsBytes(await service.buildPdf([annotated], searchable: false));
       // An explicit image-only export must not require OCR.
       await service.buildPdf([
         ScanPage(id: '3', path: portrait.path),

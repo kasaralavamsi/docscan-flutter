@@ -4,21 +4,25 @@ Scan with automatic document edge detection, perspective correction and native a
 
 - **Scan / Add** open the native scanner: ML Kit on Android with Google Play services, VisionKit on supported iOS devices. Use Auto mode in the native UI for automatic capture; manual shutter and review remain available. Auto-capture timing and corner detection are controlled by the platform, not a Dart timer.
 - Android without Google Play services uses the scanner plugin's manual camera/corner adjustment fallback; automatic detection is unavailable there. First use of the Google scanner may need network access to download its module. iOS scanning needs a supported physical device.
-- **Text** recognizes the selected page locally and shows selectable/copyable text. This version recognizes **Latin script** only, including English and accented Latin languages.
+- **OCR** recognizes the selected page locally, then lets you correct or clear individual words while retaining their position on the page. Corrections change searchable PDF text; the scanned image itself stays visible. This version recognizes **Latin script** only, including English and accented Latin languages.
 - **Searchable PDF** is on by default. Export recognizes every current page and places invisible, selectable word text over the image using OCR coordinates. Noto Sans is bundled (OFL license) so export needs no font download. Empty OCR results produce image-only pages. OCR errors stop export and show a message; retry or explicitly turn off Searchable PDF to export images only.
-- Cropping/filtering invalidates cached OCR. Reordering/deleting preserves the remaining pages' OCR. OCR runs on demand, not during capture.
-- Recent scans remain in memory for the current app session. Back returns edited pages to the recent list. This is not a persistent document library or a library-wide search feature.
+- Cropping/filtering/rotation invalidates cached OCR and its corrections. Reordering/deleting preserves the remaining pages' OCR. OCR runs on demand, not during capture.
+- **Save and close** (save icon or Back) stores the document and all current edits on device. Saved scans reopen from the home screen after restarting the app. If saving fails, the editor stays open for retry. Save before closing the app; edits in an open editor are not continuously autosaved.
+- **Import PDF** opens a PDF from the device's file picker and renders its pages into editable images at 144 DPI. The original file is untouched; save the edited copy in the library and export a new PDF. Import accepts up to 50 MB / 100 pages and rejects failed/partial imports. Existing PDF vectors, forms, links and text objects are flattened; searchable text is rebuilt by OCR.
+- **Annotate** adds visible text, translucent highlights and a hand-drawn signature. Tap to add/edit text, drag text to move, and use the size sliders to resize it. Draw highlights or signature strokes directly on the page. Long-press any mark to remove it; Undo restores the last edit in the annotation session. Apply returns the marks to the editor; Back discards unapplied annotation changes.
+- **Rotate** turns a page clockwise. Crop/rotate first flatten existing annotations into the image so marks follow the page geometry; those marks then become image pixels. Filters preserve editable overlays, while all image edits invalidate cached OCR/corrections for that page.
+- The home search filters saved document names, recognized/corrected text and text annotations. It uses OCR already saved in the library; it does not run recognition in the background.
 
 ## Setup
 
-Install current stable Flutter with Dart 3.13 or newer (Flutter 3.47+), Android tooling, and Xcode/CocoaPods for iOS. The repository contains app source; generate host projects first:
+Install current stable Flutter with Dart 3.13 or newer (Flutter 3.47+), Android tooling, and Xcode/CocoaPods for iOS. The Android host is included. To add an iOS host, run:
 
 ```sh
-flutter create --platforms=android,ios --project-name docscan_clone .
+flutter create --platforms=ios --project-name docscan_clone .
 flutter pub get
 ```
 
-Keep the supplied `lib/`, assets and `pubspec.yaml`. Apply the following host settings **after generation**, before building.
+Keep the supplied `lib/`, assets and `pubspec.yaml`. The Android settings below are included in the repository; apply the iOS settings after generating its host. The Gradle wrapper is pinned to 8.13.
 
 ### Android
 
@@ -82,16 +86,18 @@ flutter run
 
 ## Verification and device checklist
 
-Automated tests cover OCR invalidation and searchable/image-only PDF generation. CI also runs `tool/verify_pdf.py` with PyMuPDF to check actual text extraction (including accents), selection geometry, portrait/landscape page sizes, blank pages and identical visible pixels with/without OCR. Native detection and recognition require physical-device testing:
+Automated tests cover OCR invalidation/corrections, persistent image and metadata storage (including moved iOS containers), save failure recovery, PDF import ordering/failure/limits, annotation removal/undo and editor retry behavior. CI also runs `tool/verify_pdf.py` with PyMuPDF to check actual text extraction (including accents), selection geometry, portrait/landscape page sizes, blank pages, identical visible pixels with/without OCR, visible text, highlights and signature geometry. Native detection and recognition require physical-device testing:
 
 1. Scan a well-lit page using Auto mode; confirm detected corners and automatic shutter. Cancel once and start again.
-2. Scan multiple pages; Add more, crop, apply each filter, reorder and delete. Back out and reopen the recent scan.
-3. Read Text, edit that page, read Text again and confirm it reflects the edited image.
+2. Scan multiple pages; Add more, crop, rotate, apply each filter, reorder and delete. Save and close, restart the app, and reopen the saved scan.
+3. Open OCR, correct a word, save and reopen; verify the correction in a searchable export. Crop or filter the page, then verify OCR is refreshed.
 4. Share a searchable PDF with portrait and landscape pages. In a PDF viewer, search for a distinctive word, copy accented text and check selection alignment.
 5. Try blank paper, denied camera permission, first-use module download failure and Android without Play services. Confirm errors are visible and cancellation preserves the editor.
-6. Turn searchable export off and confirm an image-only PDF still shares. Test iPad sharing on a device.
+6. Annotate a page with visible text, a highlight and a drawn signature. Move/resize text, delete a mark, undo, apply and save. Reopen and export; check all marks visually in the PDF. Crop/rotate an annotated page and check the marks move with the image.
+7. Import a multi-page PDF from local storage and a cloud file provider; save, reopen and edit it. Test cancellation, an invalid/encrypted PDF, over-limit files and a failed import. Confirm the original file stays unchanged.
+8. Turn searchable export off and confirm the page images and visible annotations still share. Test iPad sharing on a device.
 
-Automated checks were run with Flutter 3.47.7 / Dart 3.13.5. Android/iOS host builds and physical-device camera/OCR checks have not been run in this workspace.
+Automated checks were run with Flutter 3.47.7 / Dart 3.13.5. Android/iOS host builds and physical-device camera/OCR/file-picker/PDF-renderer checks have not been run in this workspace.
 
 ## API references and design
 
@@ -99,4 +105,6 @@ Verified against [cunning_document_scanner 3.0.3](https://pub.dev/packages/cunni
 
 `ScannerService` copies plugin-owned scan output to application support storage before returning it to the editor. Image edits use temporary files. `OcrService` releases its recognizer after each page, and `PdfService` embeds the current image and its matching OCR coordinates on pages preserving image aspect ratio. PDFs use unique filenames to avoid overwriting previous exports. Text follows the recognizer's reading order; skewed/curved pages and low-quality scans can reduce accuracy and selection alignment. Other scripts require additional ML Kit models, script selection and matching embedded fonts.
 
-App-owned images and PDFs are not automatically deleted; storage management and a persistent library remain future work. This app uses original branding and assets, without Adobe trademarks or proprietary UI.
+`DocumentStore` writes versioned image copies and atomically replaces per-document metadata, preserving the previous saved version if a save fails. Saved image filenames are relative to the library directory, so moving an iOS application container does not break paths. Obsolete copies are removed after a successful save. Temporary scanner/import/edit files and exported PDFs still need periodic storage cleanup; document deletion and cloud sync are future work.
+
+PDF imports and flattening use [printing 5.15.1](https://pub.dev/packages/printing) `Printing.raster` / `PdfRaster.toPng`. File selection uses the current [file_picker 13.1.0](https://pub.dev/packages/file_picker) `FilePicker.pickFile` API, which returns a nullable `PlatformFile`. Neither PDF import nor annotation editing requires network access to download app fonts. On Android/iOS these packages need no additional host settings beyond the setup above. This app uses original branding and assets, without Adobe trademarks or proprietary UI.

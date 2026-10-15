@@ -4,6 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/scanner_service.dart';
+import '../models/ocr_result.dart';
+import '../models/page_annotation.dart';
+import '../widgets/page_canvas.dart';
+import 'annotation_screen.dart';
+import 'ocr_editor_screen.dart';
 import '../services/ocr_service.dart';
 import '../models/scan_page.dart';
 import '../services/image_service.dart';
@@ -11,7 +16,8 @@ import '../services/pdf_service.dart';
 
 class EditorScreen extends StatefulWidget {
   final List<ScanPage> initialPages;
-  const EditorScreen({super.key, required this.initialPages});
+  final Future<void> Function(List<ScanPage>)? onSave;
+  const EditorScreen({super.key, required this.initialPages, this.onSave});
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
@@ -50,7 +56,11 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _crop() => _run(() async {
-    final out = await imageService.crop(pages[selected].path);
+    final page = pages[selected];
+    final source = page.annotations.isEmpty
+        ? page.path
+        : await pdfService.flattenPage(page);
+    final out = await imageService.crop(source);
     if (out != null && mounted) {
       setState(() => pages[selected] = pages[selected].copyWith(path: out));
     }
@@ -63,6 +73,7 @@ class _EditorScreenState extends State<EditorScreen> {
         () => pages[selected] = pages[selected].copyWith(
           path: out,
           filter: filter,
+          geometryChanged: false,
         ),
       );
     }
@@ -86,27 +97,46 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  Future<void> _saveAndClose() => _run(() async {
+    await widget.onSave?.call(List.of(pages));
+    if (mounted) Navigator.pop(context, pages);
+  });
+
+  Future<void> _rotate() => _run(() async {
+    final page = pages[selected];
+    final source = page.annotations.isEmpty
+        ? page.path
+        : await pdfService.flattenPage(page);
+    final out = await imageService.rotate(source);
+    if (mounted) setState(() => pages[selected] = page.copyWith(path: out));
+  });
+
+  Future<void> _annotate() => _run(() async {
+    final result = await Navigator.push<List<PageAnnotation>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AnnotationScreen(page: pages[selected]),
+      ),
+    );
+    if (mounted && result != null) {
+      setState(
+        () => pages[selected] = pages[selected].copyWith(annotations: result),
+      );
+    }
+  });
+
   Future<void> _showText() => _run(() async {
     await _recognize(selected);
     if (!mounted) return;
-    final text = pages[selected].ocr!.text;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Recognized text'),
-        content: SingleChildScrollView(
-          child: SelectableText(
-            text.isEmpty ? 'No text found. Try a clearer scan.' : text,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
+    final result = await Navigator.push<OcrResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => OcrEditorScreen(result: pages[selected].ocr!),
       ),
     );
+    if (mounted && result != null) {
+      setState(() => pages[selected] = pages[selected].copyWith(ocr: result));
+    }
   });
 
   Future<void> _export() => _run(() async {
@@ -141,7 +171,7 @@ class _EditorScreenState extends State<EditorScreen> {
     return PopScope<List<ScanPage>>(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && !busy) Navigator.pop(context, pages);
+        if (!didPop && !busy) _saveAndClose();
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF111318),
@@ -150,6 +180,11 @@ class _EditorScreenState extends State<EditorScreen> {
           foregroundColor: Colors.white,
           title: Text('${selected + 1} / ${pages.length}'),
           actions: [
+            IconButton(
+              tooltip: 'Save and close',
+              onPressed: busy ? null : _saveAndClose,
+              icon: const Icon(Icons.save_outlined),
+            ),
             TextButton(
               onPressed: busy ? null : _export,
               child: const Text('PDF & Share'),
@@ -174,7 +209,7 @@ class _EditorScreenState extends State<EditorScreen> {
                     Center(
                       child: Padding(
                         padding: const EdgeInsets.all(16),
-                        child: Image.file(File(page.path), fit: BoxFit.contain),
+                        child: PageCanvas(page: page),
                       ),
                     ),
                     if (busy) const Center(child: CircularProgressIndicator()),
@@ -228,8 +263,18 @@ class _EditorScreenState extends State<EditorScreen> {
                         children: [
                           _Action(
                             icon: Icons.text_snippet_outlined,
-                            label: 'Text',
+                            label: 'OCR',
                             onTap: _showText,
+                          ),
+                          _Action(
+                            icon: Icons.edit_note,
+                            label: 'Annotate',
+                            onTap: _annotate,
+                          ),
+                          _Action(
+                            icon: Icons.rotate_right,
+                            label: 'Rotate',
+                            onTap: _rotate,
                           ),
                           _Action(
                             icon: Icons.crop_rounded,
