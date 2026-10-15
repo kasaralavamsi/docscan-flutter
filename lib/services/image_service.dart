@@ -1,4 +1,5 @@
 import 'dart:io';
+
 import 'package:image/image.dart' as img;
 import 'package:image_cropper/image_cropper.dart';
 import 'package:path_provider/path_provider.dart';
@@ -43,7 +44,9 @@ class ImageService {
     }
 
     final dir = await getTemporaryDirectory();
-    final out = File('${dir.path}/scan_${DateTime.now().microsecondsSinceEpoch}.jpg');
+    final out = File(
+      '${dir.path}/scan_${DateTime.now().microsecondsSinceEpoch}.jpg',
+    );
     await out.writeAsBytes(img.encodeJpg(source, quality: 92));
     return out.path;
   }
